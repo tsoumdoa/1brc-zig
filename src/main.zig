@@ -7,6 +7,7 @@ const SharedData = struct {
     mutex: Mutex,
     value: i32,
     map: std.StringHashMap(Data),
+    keyArray: std.ArrayList([]u8),
 
     pub fn incrementCount(self: *SharedData) void {
         self.mutex.lock();
@@ -20,7 +21,7 @@ const SharedData = struct {
         const entry = try self.map.getOrPut(name);
         if (entry.found_existing) {
             entry.value_ptr.low = @min(val, entry.value_ptr.low);
-            entry.value_ptr.high = @min(val, entry.value_ptr.high);
+            entry.value_ptr.high = @max(val, entry.value_ptr.high);
             entry.value_ptr.sum += val;
             entry.value_ptr.count += 1;
         } else {
@@ -28,6 +29,7 @@ const SharedData = struct {
             entry.value_ptr.high = val;
             entry.value_ptr.sum = val;
             entry.value_ptr.count = 1;
+            try self.keyArray.append(name);
         }
     }
 };
@@ -59,28 +61,47 @@ pub fn main() !void {
         0,
     );
     defer std.os.munmap(ptr);
+
     var map = std.StringHashMap(Data).init(allocator);
     defer map.deinit();
+
+    var key_array = std.ArrayList([]u8).init(allocator);
+    defer key_array.deinit();
+
     var shared_data = SharedData{
         .mutex = Mutex{},
         .value = 0,
         .map = map,
+        .keyArray = key_array,
     };
     try foldRow(ptr[0..(length - 1)], &shared_data);
-    shared_data.value += 1;
 
-    try stdout.print("shared_data: {d}\n", .{shared_data.value});
+    // try stdout.print("shared_data: {d}\n", .{shared_data.value});
+    std.mem.sort([]const u8, shared_data.keyArray.items, {}, (struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }).lessThan);
 
-    var iterator = shared_data.map.iterator();
-    while (iterator.next()) |entry| {
-        try stdout.print("{s}={d:.1}/{d:.1}/{d:.1}\n", .{ entry.key_ptr.*, entry.value_ptr.low, entry.value_ptr.sum / entry.value_ptr.count, entry.value_ptr.high });
+    for (shared_data.keyArray.items) |name| {
+        const entry = shared_data.map.get(name).?;
+        try stdout.print("{s}={d:.1}/{d:.1}/{d:.1}\n", .{ name, entry.low, entry.sum / entry.count, entry.high });
     }
+    //
+    // var iterator = shared_data.map.iterator();
+    // while (iterator.next()) |entry| {
+    //     try stdout.print("{s}={d:.1}/{d:.1}/{d:.1}\n", .{ entry.key_ptr.*, entry.value_ptr.low, entry.value_ptr.sum / entry.value_ptr.count, entry.value_ptr.high });
+    // }
 }
 
 fn foldRow(ptr: []u8, shared_data: *SharedData) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+    _ = allocator;
+    // const max_chunk_size = 1_024_000_000;
+    // const max_chunk_size = 512_000_000;
     // const max_chunk_size = 256_000_000;
+    // const max_chunk_size = 128_000_000;
     const max_chunk_size = 64_000_000;
     // const max_chunk_size = 32_000_000;
     // const max_chunk_size = 16_000_000;
@@ -95,26 +116,12 @@ fn foldRow(ptr: []u8, shared_data: *SharedData) !void {
                 prev_delimiter = indx;
             }
             if (c == '\n') {
-                // const name = ptr[prev_line..prev_delimiter];
-                // var name = allocator.dupe(u8, ptr[prev_line..prev_delimiter]) catch |err| return err;
-                // _ = name;
-                // var val = allocator.dupe(u8, ptr[prev_delimiter + 1 .. indx]) catch |err| return err;
-                var line = allocator.dupe(u8, ptr[prev_line..indx]) catch |err| return err;
-                // defer allocator.free(line);
-                // try stdout.print("line: {}\n", .{line.len});
-
-                var iter = std.mem.split(u8, line, ";");
-                const name = iter.next().?;
-                _ = name;
-                const val = try std.fmt.parseFloat(f16, iter.next().?);
-                //
-                // try stdout.print("name: {s}\n", .{name});
-                // var val = ptr.ptr[prev_delimiter + 1 .. indx];
-                // const cast_val = try std.fmt.parseFloat(f16, val);
-                // _ = cast_val;
-                try shared_data.addMap(ptr[prev_line..prev_delimiter], val);
+                const name = ptr[prev_line..prev_delimiter];
+                const val = ptr[prev_delimiter + 1 .. indx];
+                const cast_val = try std.fmt.parseFloat(f16, val);
+                try shared_data.addMap(name, cast_val);
                 prev_line = indx + 1;
-                shared_data.incrementCount();
+                // shared_data.incrementCount();
             }
         }
         return;
